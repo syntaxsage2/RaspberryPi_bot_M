@@ -1,0 +1,44 @@
+# -*- coding:utf-8 -*-
+"""
+讯飞语音助手配置文件示例
+请复制此文件为config.py并填写您的讯飞开放平台凭证
+"""
+
+# 讯飞开放平台凭证
+# 获取地址：https://console.xfyun.cn/app/myapp
+XFYUN_APPID = "您的APPID"
+XFYUN_API_KEY = "您的API_KEY"
+XFYUN_API_SECRET = "您的API_SECRET"
+
+# 音频参数配置
+AUDIO_CONFIG = {
+    "sample_rate": 16000,  # 采样率（讯飞ASR要求16000Hz）
+    "channels": 1,         # 单声道
+    "chunk": 1024,         # 音频块大小
+    "format": "int16",     # 音频格式
+    "record_seconds": 5,   # 录音时长（秒）
+    "input_device_index": 1,  # 麦克风设备ID（树莓派USB音频设备）
+}
+
+# ASR（语音识别）配置
+ASR_CONFIG = {
+    "domain": "slm",       # 使用大模型服务
+    "language": "zh_cn",   # 中文
+    "accent": "mandarin",  # 普通话
+    "dwa": "wpgs",         # 动态修正
+}
+
+# TTS（语音合成）配置 - 超拟人发音人
+TTS_CONFIG = {
+    "vcn": "x5_lingyuyan_flow",      # 发音人
+    "speed": 50,                     # 语速（0-100）
+    "volume": 50,                    # 音量（0-100）
+    "pitch": 50,                     # 音高（0-100）
+    "audio_encoding": "lame",        # mp3格式
+    "sample_rate": 24000,            # 采样率（超拟人推荐24000Hz）
+}
+
+# 文件路径配置
+OUTPUT_DIR = "./audio_files"
+RECORDED_AUDIO = f"{OUTPUT_DIR}/recorded.wav"  # 改为WAV格式，便于检查采样率
+TTS_AUDIO = f"{OUTPUT_DIR}/tts_output.mp3"
