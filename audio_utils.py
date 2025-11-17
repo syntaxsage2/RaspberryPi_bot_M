@@ -3,6 +3,7 @@
 音频工具模块
 提供录音和播放功能
 """
+import time
 
 import pyaudio
 import wave
@@ -220,6 +221,270 @@ class AudioRecorder:
     def stop_recording(self):
         """停止录音"""
         self.is_recording = False
+
+    def record_with_vad(self,
+                        max_duration=30,
+                        output_file=None,
+                        vad_threshold=0.5,
+                        min_speech_duration_ms=250,
+                        min_silence_duration_ms=800):
+        """
+        使用VAD自动检测的录音方法
+
+        :param max_duration: 最大录音时长（秒），防止无限录音
+        :param output_file: 保存文件路径（可选）
+        :param vad_threshold: VAD阈值
+        :param min_speech_duration_ms: 最小语音时长
+        :param min_silence_duration_ms: 最小静音时长（说完多久算结束）
+        :return: (录音数据, 实际录音时长)
+        """
+        from vad_detector import VADDetector
+
+        print(f"🎤 开始VAD智能录音（最长{max_duration}秒）...")
+        print(f"💡 提示：检测到静音{min_silence_duration_ms}ms后自动停止")
+
+        # 创建VAD检测器
+        vad = VADDetector(
+            sample_rate=self.sample_rate,
+            threshold=vad_threshold,
+            min_speech_duration_ms=min_speech_duration_ms,
+            min_silence_duration_ms=min_silence_duration_ms,
+            window_size_samples=self.chunk
+        )
+
+        # 初始化 PyAudio
+        audio = pyaudio.PyAudio()
+        
+        try:
+            # 打开音频流
+            stream = audio.open(
+                format=self.format,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=self.input_device_index,
+                frames_per_buffer=self.chunk
+            )
+
+            print("🎙️ 麦克风已就绪，请开始说话...")
+
+            frames = []
+            start_time = time.time()
+            frame_count = 0
+            speech_detected = False
+
+            try:
+                while True:
+                    # 读取音频帧
+                    data = stream.read(self.chunk, exception_on_overflow=False)
+                    frame_count += 1
+
+                    # VAD检测
+                    is_speech, should_stop = vad.process_frame(data)
+
+                    # 状态显示
+                    if is_speech and not speech_detected:
+                        print("🗣️ 检测到语音，开始录音...")
+                        speech_detected = True
+
+                    # 保存音频帧
+                    if speech_detected:
+                        frames.append(data)
+
+                    # 实时显示
+                    if frame_count % 10 == 0:  # 每10帧更新一次
+                        elapsed = time.time() - start_time
+                        status = "🗣️ 语音" if is_speech else "🤫 静音"
+                        print(f"\r⏱️ {elapsed:.1f}s | {status} | 帧数: {len(frames)}",
+                              end='', flush=True)
+
+                    # 检查是否应该停止
+                    if should_stop:
+                        print("\n✅ 检测到说话结束，停止录音")
+                        break
+
+                    # 检查是否超时
+                    if time.time() - start_time > max_duration:
+                        print(f"\n⏰ 达到最大时长 {max_duration}秒，停止录音")
+                        break
+
+            except KeyboardInterrupt:
+                print("\n⚠️ 录音被中断")
+            finally:
+                stream.stop_stream()
+                stream.close()
+
+            # 计算实际录音时长
+            actual_duration = len(frames) * self.chunk / self.sample_rate
+            print(f"📊 实际录音时长: {actual_duration:.2f}秒")
+
+            if not frames:
+                print("❌ 未录制到任何音频")
+                return None, 0
+
+            # 合并音频数据
+            audio_data = b''.join(frames)
+
+            # 保存文件（可选）
+            if output_file:
+                self._save_wav(audio_data, output_file, audio)
+                print(f"💾 音频已保存: {output_file}")
+
+            return audio_data, actual_duration
+        
+        finally:
+            audio.terminate()
+
+    def record_with_vad_lite(self,
+                             max_duration=30,
+                             output_file=None,
+                             aggressiveness=2,
+                             min_silence_duration_ms=800):
+        """
+        使用轻量级 VAD 自动检测的录音方法（适合树莓派 Zero 2W）
+
+        :param max_duration: 最大录音时长（秒）
+        :param output_file: 保存文件路径（可选）
+        :param aggressiveness: VAD 敏感度 0-3（推荐2）
+        :param min_silence_duration_ms: 最小静音时长（说完多久算结束）
+        :return: (录音数据, 实际录音时长)
+        """
+        from vad_detector_lite import VADDetectorLite
+
+        print(f"🎤 开始轻量级VAD录音（最长{max_duration}秒）...")
+        print(f"💡 提示：检测到静音{min_silence_duration_ms}ms后自动停止")
+
+        # 创建轻量级 VAD 检测器
+        vad = VADDetectorLite(
+            sample_rate=self.sample_rate,
+            aggressiveness=aggressiveness,
+            frame_duration_ms=30,  # 固定30ms帧
+            padding_duration_ms=300,
+            min_silence_duration_ms=min_silence_duration_ms
+        )
+
+        # WebRTC VAD 需要特定的帧大小
+        vad_chunk_size = vad.get_frame_size_bytes()
+        vad_chunk_samples = vad_chunk_size // 2  # int16 = 2字节
+
+        print(f"🔧 VAD帧大小: {vad_chunk_samples} 样本 ({vad_chunk_size} 字节)")
+
+        # 初始化 PyAudio
+        audio = pyaudio.PyAudio()
+        
+        try:
+            # 打开音频流
+            stream = audio.open(
+                format=self.format,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=self.input_device_index,
+                frames_per_buffer=vad_chunk_samples  # 使用VAD要求的帧大小
+            )
+
+            print("🎙️  麦克风已就绪，请开始说话...")
+
+            frames = []
+            start_time = time.time()
+            frame_count = 0
+            speech_detected = False
+
+            try:
+                while True:
+                    # 读取音频帧（大小匹配VAD要求）
+                    data = stream.read(vad_chunk_samples, exception_on_overflow=False)
+                    frame_count += 1
+
+                    # VAD 检测
+                    is_speech, should_stop, buffered_audio = vad.process_frame(data)
+
+                    # 第一次检测到语音
+                    if vad.is_speaking and not speech_detected:
+                        speech_detected = True
+
+                    # 实时显示
+                    if frame_count % 10 == 0:
+                        elapsed = time.time() - start_time
+                        status = "🗣️  语音" if is_speech else "🤫 静音"
+                        silence = vad.silence_counter if vad.triggered else 0
+                        print(f"\r⏱️  {elapsed:.1f}s | {status} | 静音计数: {silence}/{vad.silence_frames}",
+                              end='', flush=True)
+
+                    # 检查是否应该停止
+                    if should_stop:
+                        print("\n✅ 检测到说话结束，停止录音")
+                        if buffered_audio:
+                            frames = [buffered_audio]
+                        break
+
+                    # 检查是否超时
+                    if time.time() - start_time > max_duration:
+                        print(f"\n⏰ 达到最大时长 {max_duration}秒，停止录音")
+                        # 获取缓冲的音频
+                        if vad.voiced_frames:
+                            frames = [b''.join(vad.voiced_frames)]
+                        break
+
+            except KeyboardInterrupt:
+                print("\n⚠️  录音被中断")
+            finally:
+                stream.stop_stream()
+                stream.close()
+
+            if not frames:
+                print("❌ 未录制到任何音频")
+                return None, 0
+
+            # 合并音频数据
+            audio_data = frames[0] if len(frames) == 1 else b''.join(frames)
+
+            # 计算实际录音时长
+            actual_duration = len(audio_data) / (self.sample_rate * 2)  # 2字节per样本
+            print(f"📊 实际录音时长: {actual_duration:.2f}秒")
+
+            # 保存文件（可选）
+            if output_file:
+                self._save_wav(audio_data, output_file, audio)
+                print(f"💾 音频已保存: {output_file}")
+
+            return audio_data, actual_duration
+        
+        finally:
+            audio.terminate()
+    
+    def _save_wav(self, audio_data, output_file, audio):
+        """
+        保存音频数据为WAV文件
+        
+        :param audio_data: 音频数据（bytes）
+        :param output_file: 输出文件路径
+        :param audio: PyAudio实例
+        """
+        # 确保目录存在
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # 根据文件扩展名保存
+        if output_file.endswith('.pcm'):
+            # 保存为PCM格式
+            with open(output_file, 'wb') as f:
+                f.write(audio_data)
+        elif output_file.endswith('.wav'):
+            # 保存为WAV格式
+            with wave.open(output_file, 'wb') as wf:
+                wf.setnchannels(self.channels)
+                wf.setsampwidth(audio.get_sample_size(self.format))
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(audio_data)
+        else:
+            # 默认保存为WAV
+            with wave.open(output_file + '.wav', 'wb') as wf:
+                wf.setnchannels(self.channels)
+                wf.setsampwidth(audio.get_sample_size(self.format))
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(audio_data)
 
 
 class AudioPlayer:

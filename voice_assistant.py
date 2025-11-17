@@ -88,59 +88,81 @@ class VoiceAssistant:
             XFYUN_API_SECRET == "your_api_secret_here"):
             return False
         return True
-    
-    def listen(self, duration=5, use_stream=None):
+
+    def listen(self, duration=5, use_stream=None, use_vad=False):
         """
         监听用户语音输入
-        :param duration: 录音时长（秒）
+        :param duration: 录音时长（秒），VAD模式下作为最大时长
         :param use_stream: 是否使用流式识别（None则使用默认设置）
+        :param use_vad: 是否使用VAD自动检测（推荐！）
         :return: 识别的文本
         """
         print("\n" + "=" * 60)
         print("👂 开始监听...")
+        if use_vad:
+            print("🧠 轻量级VAD模式：自动检测说话结束（适配Zero 2W）")
         print("=" * 60)
 
         # 确定使用流式还是非流式
         if use_stream is None:
             use_stream = self.use_stream_asr
-        
-        if use_stream:
-            # 流式识别（边录边识别，零延迟）
-            print("⚡ 使用流式识别模式（零延迟）")
-            
-            # 启动流式识别
-            self.asr_stream.start_recognition()
-            
-            # 流式录音（边录边发送）
-            self.recorder.record_stream(
-                duration=duration,
-                frame_callback=self.asr_stream.add_audio_frame,  # 每录一帧就发送
-                output_file=None  # 可选保存文件
-            )
-            
-            # 通知识别结束
-            self.asr_stream.finish_recording()
-            
-            # 等待识别结果
-            text = self.asr_stream.wait_result(timeout=10)
-            
-        else:
-            # 传统方式（先录完再识别）
-            print("💾 使用传统识别模式（先录后识别）")
-            
-            # 录音
-            audio_file = self.recorder.record(duration, RECORDED_AUDIO)
 
-            # 语音识别
-            print("\n" + "-" * 60)
-            text = self.asr.recognize_file(audio_file)
-            print("-" * 60)
+        if use_vad:
+            # VAD模式：使用轻量级录音
+            print("⚡ 使用轻量级VAD录音（WebRTC）")
+
+            audio_data, actual_duration = self.recorder.record_with_vad_lite(
+                max_duration=duration,
+                output_file=RECORDED_AUDIO if not use_stream else None,
+                aggressiveness=2,  # 标准敏感度
+                min_silence_duration_ms=800
+            )
+
+            if not audio_data:
+                print("\n⚠️  未录制到音频")
+                return ""
+
+            if use_stream:
+                # 流式识别：启动ASR
+                self.asr_stream.start_recognition()
+
+                # 分帧发送音频
+                chunk_size = self.recorder.chunk * 2  # 字节数
+                for i in range(0, len(audio_data), chunk_size):
+                    frame = audio_data[i:i + chunk_size]
+                    self.asr_stream.add_audio_frame(frame)
+
+                # 结束识别
+                self.asr_stream.finish_recording()
+                text = self.asr_stream.wait_result(timeout=10)
+            else:
+                # 传统识别
+                text = self.asr.recognize_file(RECORDED_AUDIO)
+
+        else:
+            # 非VAD模式（固定时长）
+            if use_stream:
+                print("⚡ 使用流式识别模式（零延迟）")
+                self.asr_stream.start_recognition()
+
+                self.recorder.record_stream(
+                    duration=duration,
+                    frame_callback=self.asr_stream.add_audio_frame,
+                    output_file=None
+                )
+
+                self.asr_stream.finish_recording()
+                text = self.asr_stream.wait_result(timeout=10)
+            else:
+                print("💾 使用传统识别模式")
+                audio_file = self.recorder.record(duration, RECORDED_AUDIO)
+                text = self.asr.recognize_file(audio_file)
 
         if text:
             print(f"\n✅ 识别结果：{text}")
             return text
         else:
-            print("\n⚠️ 未识别到有效内容")
+            print("\n⚠️  未识别到有效内容")
             return ""
     
     def speak(self, text, use_stream=None):
@@ -211,65 +233,62 @@ class VoiceAssistant:
             self.speak(response)
         
         print("\n 测试完成！")
-    
+
     def interactive_mode(self):
         """交互模式：持续对话"""
-        print("\n 进入交互模式")
+        print("\n🎙️ 进入交互模式")
         print("=" * 60)
         print("提示：")
-        print("  - 按回车键开始录音（5秒）")
+        print("  - 按回车键开始录音（VAD智能检测结束）")
         print("  - 输入 'quit' 或 'exit' 退出")
         print("  - 输入 'speak:文本' 直接播报文本")
-        print("  - 输入 'stream' 切换流式/非流式模式")
-        print(f"  - 当前ASR模式：{'⚡流式识别（零延迟）' if self.use_stream_asr else '💾传统识别（先录后识）'}")
-        print(f"  - 当前TTS模式：{'⚡流式播放（低延迟）' if self.use_stream_tts else '💾传统播放（保存文件）'}")
+        print("  - 输入 'vad' 切换VAD开关")
+        print(f"  - VAD状态：{'✅ 开启（智能检测）' if self.use_vad else '❌ 关闭（固定5秒）'}")
         print("=" * 60)
-        
+
+        # 添加VAD开关
+        self.use_vad = True  # 默认开启VAD
+
         while True:
             try:
                 # 等待用户指令
-                user_input = input("\n 请输入指令（直接回车开始录音）：").strip()
-                
+                user_input = input("\n🎤 请输入指令（直接回车开始录音）：").strip()
+
                 # 退出
                 if user_input.lower() in ['quit', 'exit', '退出']:
-                    print(" 再见！")
+                    print("👋 再见！")
                     break
-                
-                # 切换流式/非流式模式
-                elif user_input.lower() == 'stream':
-                    # 同时切换ASR和TTS
-                    self.use_stream_asr = not self.use_stream_asr
-                    self.use_stream_tts = not self.use_stream_tts
-                    asr_mode = '⚡流式识别（零延迟）' if self.use_stream_asr else '💾传统识别'
-                    tts_mode = '⚡流式播放（低延迟）' if self.use_stream_tts else '💾传统播放'
-                    print(f"✅ 已切换模式：")
-                    print(f"   ASR: {asr_mode}")
-                    print(f"   TTS: {tts_mode}")
+
+                # 切换VAD
+                elif user_input.lower() == 'vad':
+                    self.use_vad = not self.use_vad
+                    status = '✅ 开启（智能检测）' if self.use_vad else '❌ 关闭（固定5秒）'
+                    print(f"💡 VAD已切换: {status}")
                     continue
-                
+
                 # 直接播报
                 elif user_input.startswith('speak:') or user_input.startswith('说:'):
                     text = user_input.split(':', 1)[1].strip()
                     if text:
                         self.speak(text)
                     else:
-                        print("  请输入要播报的文本")
-                
-                # 录音识别
+                        print("⚠️ 请输入要播报的文本")
+
+                # 录音识别（使用VAD）
                 else:
-                    user_text = self.listen(duration=5)
-                    
+                    user_text = self.listen(duration=30, use_vad=self.use_vad)
+
                     if user_text:
                         # 这里后续可以接入大模型
                         # 目前只做简单回复
                         response = f"收到，你说的是：{user_text}"
                         self.speak(response)
-            
+
             except KeyboardInterrupt:
-                print("\n\n 收到中断信号，再见！")
+                print("\n\n⚠️ 收到中断信号，再见！")
                 break
             except Exception as e:
-                print(f"\n 发生错误：{e}")
+                print(f"\n❌ 发生错误：{e}")
                 continue
     
     def simple_test(self):
