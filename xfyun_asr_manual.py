@@ -42,6 +42,7 @@ class XFyunASRManual:
         self.api_key = api_key
         self.api_secret = api_secret
         self.result_text = ""
+        self.is_finished = False  # 识别完成标志
 
     def create_url(self):
         """
@@ -189,7 +190,9 @@ class XFyunASRManual:
 
                 # 检查是否完成
                 if status == 2:
-                    print("\n 识别完成！")
+                    print("\n✅ 识别完成！")
+                    self.is_finished = True  # 标记完成
+                    # 立即关闭连接，不等待服务器响应
                     if ws and hasattr(ws, 'close') and callable(getattr(ws, 'close', None)):
                         try:
                             ws.close()
@@ -209,7 +212,13 @@ class XFyunASRManual:
 
     def on_error(self, ws, error):
         """处理错误"""
-        print(f" WebSocket错误：{error}")
+        # 如果已经完成识别，忽略关闭时的超时错误
+        if self.is_finished and 'timeout' in str(error).lower():
+            print(f"[DEBUG ASR] 忽略正常关闭的超时信号")
+            return
+        
+        # 其他错误正常打印
+        print(f"❌ WebSocket错误：{error}")
         if ws and hasattr(ws, 'close'):
             try:
                 ws.close()
@@ -218,7 +227,12 @@ class XFyunASRManual:
 
     def on_close(self, ws, close_status_code, close_msg):
         """处理连接关闭"""
-        pass
+        if self.is_finished:
+            # 正常完成，不打印错误
+            print(f"[DEBUG ASR] WebSocket连接正常关闭")
+        else:
+            # 异常关闭
+            print(f"⚠️ WebSocket意外关闭：状态码={close_status_code}")
 
     def on_open(self, ws, audio_file):
         """处理连接建立"""
@@ -308,9 +322,10 @@ class XFyunASRManual:
         :return: 识别的文本
         """
         self.result_text = ""  # 重置结果
+        self.is_finished = False  # 重置完成标志
         print(f"[DEBUG ASR] 重置识别结果为空")
 
-        print(f" 开始识别音频：{audio_file}")
+        print(f"🎤 开始识别音频：{audio_file}")
 
         # 创建WebSocket连接
         websocket.enableTrace(False)
@@ -324,8 +339,14 @@ class XFyunASRManual:
         )
         ws.on_open = lambda ws: self.on_open(ws, audio_file)
 
-        # 运行WebSocket
-        ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+        # 运行WebSocket（关键优化：设置超时参数）
+        # ping_timeout: WebSocket ping超时时间（秒）
+        # timeout: 整体超时时间（秒）
+        ws.run_forever(
+            sslopt={"cert_reqs": ssl.CERT_NONE},
+            ping_timeout=1,  # 1秒ping超时（加快检测断开）
+            ping_interval=30  # 30秒ping间隔
+        )
 
         print(f"[DEBUG ASR] recognize函数返回结果: '{self.result_text}'")
         return self.result_text

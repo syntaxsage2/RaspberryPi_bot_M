@@ -12,14 +12,15 @@ from config import (
     AUDIO_CONFIG, TTS_CONFIG
 )
 from xfyun_asr_manual import XFyunASRManual
+from xfyun_asr_stream import XFyunASRStream  # 流式ASR
 from xfyun_tts_manual import XFyunTTSManual
+from xfyun_tts_stream import XFyunTTSStream  # 流式TTS
 from audio_utils import AudioRecorder, AudioPlayer
 
 
 def setup_alsa_environment():
     """
-    设置ALSA环境（模仿simple_raspberry_pi.py的设置）
-    这是让音频正常工作的关键！
+    设置ALSA环境
     """
     print(" 配置音频环境...")
     
@@ -62,7 +63,9 @@ class VoiceAssistant:
         
         # 初始化各个模块（修复：使用手动实现）
         self.asr = XFyunASRManual(XFYUN_APPID, XFYUN_API_KEY, XFYUN_API_SECRET)
+        self.asr_stream = XFyunASRStream(XFYUN_APPID, XFYUN_API_KEY, XFYUN_API_SECRET)  # 流式ASR
         self.tts = XFyunTTSManual(XFYUN_APPID, XFYUN_API_KEY, XFYUN_API_SECRET)
+        self.tts_stream = XFyunTTSStream(XFYUN_APPID, XFYUN_API_KEY, XFYUN_API_SECRET)  # 流式TTS
         self.recorder = AudioRecorder(
             sample_rate=AUDIO_CONFIG["sample_rate"],
             channels=AUDIO_CONFIG["channels"],
@@ -70,6 +73,10 @@ class VoiceAssistant:
             input_device_index=AUDIO_CONFIG.get("input_device_index")  # 指定麦克风
         )
         self.player = AudioPlayer()
+        
+        # 默认使用流式模式（更低延迟）
+        self.use_stream_asr = True  # 流式识别
+        self.use_stream_tts = True  # 流式播放
         
         print(" 语音助手初始化完成！")
         print("=" * 60)
@@ -82,57 +89,104 @@ class VoiceAssistant:
             return False
         return True
     
-    def listen(self, duration=5):
+    def listen(self, duration=5, use_stream=None):
         """
         监听用户语音输入
         :param duration: 录音时长（秒）
+        :param use_stream: 是否使用流式识别（None则使用默认设置）
         :return: 识别的文本
         """
         print("\n" + "=" * 60)
-        print(" 开始监听...")
+        print("👂 开始监听...")
         print("=" * 60)
 
-        # 录音
-        audio_file = self.recorder.record(duration, RECORDED_AUDIO)
+        # 确定使用流式还是非流式
+        if use_stream is None:
+            use_stream = self.use_stream_asr
+        
+        if use_stream:
+            # 流式识别（边录边识别，零延迟）
+            print("⚡ 使用流式识别模式（零延迟）")
+            
+            # 启动流式识别
+            self.asr_stream.start_recognition()
+            
+            # 流式录音（边录边发送）
+            self.recorder.record_stream(
+                duration=duration,
+                frame_callback=self.asr_stream.add_audio_frame,  # 每录一帧就发送
+                output_file=None  # 可选保存文件
+            )
+            
+            # 通知识别结束
+            self.asr_stream.finish_recording()
+            
+            # 等待识别结果
+            text = self.asr_stream.wait_result(timeout=10)
+            
+        else:
+            # 传统方式（先录完再识别）
+            print("💾 使用传统识别模式（先录后识别）")
+            
+            # 录音
+            audio_file = self.recorder.record(duration, RECORDED_AUDIO)
 
-        # 语音识别（修复：使用 recognize_file 方法）
-        print("\n" + "-" * 60)
-        text = self.asr.recognize_file(audio_file)
-        print("-" * 60)
+            # 语音识别
+            print("\n" + "-" * 60)
+            text = self.asr.recognize_file(audio_file)
+            print("-" * 60)
 
         if text:
-            print(f"\n 识别结果：{text}")
+            print(f"\n✅ 识别结果：{text}")
             return text
         else:
-            print("\n  未识别到有效内容")
+            print("\n⚠️ 未识别到有效内容")
             return ""
     
-    def speak(self, text):
+    def speak(self, text, use_stream=None):
         """
         语音播报
         :param text: 要播报的文本
+        :param use_stream: 是否使用流式播放（None则使用默认设置）
         """
         print("\n" + "=" * 60)
-        print(f" 准备播报：{text}")
+        print(f"🔊 准备播报：{text}")
         print("=" * 60)
 
-        # 语音合成（修复：使用手动TTS）
-        audio_file = self.tts.synthesize(
-            text=text,
-            output_file=TTS_AUDIO,
-            vcn=TTS_CONFIG["vcn"],
-            speed=TTS_CONFIG["speed"],
-            volume=TTS_CONFIG["volume"],
-            pitch=TTS_CONFIG["pitch"]
-        )
-
-        # 播放音频（修复：检查audio_file是否存在）
-        if audio_file and os.path.exists(audio_file):
-            print("\n" + "-" * 60)
-            self.player.play(audio_file, wait=True)
-            print("-" * 60)
+        # 确定使用流式还是非流式
+        if use_stream is None:
+            use_stream = self.use_stream_tts
+        
+        if use_stream:
+            # 流式播放（推荐，延迟更低）
+            print("⚡ 使用流式播放模式（低延迟）")
+            self.tts_stream.synthesize_and_play(
+                text=text,
+                vcn=TTS_CONFIG["vcn"],
+                speed=TTS_CONFIG["speed"],
+                volume=TTS_CONFIG["volume"],
+                pitch=TTS_CONFIG["pitch"],
+                save_file=None  # 不保存文件，直接播放
+            )
         else:
-            print(" 语音合成失败，无法播放")
+            # 传统方式（完整文件播放）
+            print("💾 使用传统播放模式（保存文件）")
+            audio_file = self.tts.synthesize(
+                text=text,
+                output_file=TTS_AUDIO,
+                vcn=TTS_CONFIG["vcn"],
+                speed=TTS_CONFIG["speed"],
+                volume=TTS_CONFIG["volume"],
+                pitch=TTS_CONFIG["pitch"]
+            )
+
+            # 播放音频
+            if audio_file and os.path.exists(audio_file):
+                print("\n" + "-" * 60)
+                self.player.play(audio_file, wait=True)
+                print("-" * 60)
+            else:
+                print("❌ 语音合成失败，无法播放")
     
     def test_mode(self):
         """测试模式：测试所有功能"""
@@ -166,6 +220,9 @@ class VoiceAssistant:
         print("  - 按回车键开始录音（5秒）")
         print("  - 输入 'quit' 或 'exit' 退出")
         print("  - 输入 'speak:文本' 直接播报文本")
+        print("  - 输入 'stream' 切换流式/非流式模式")
+        print(f"  - 当前ASR模式：{'⚡流式识别（零延迟）' if self.use_stream_asr else '💾传统识别（先录后识）'}")
+        print(f"  - 当前TTS模式：{'⚡流式播放（低延迟）' if self.use_stream_tts else '💾传统播放（保存文件）'}")
         print("=" * 60)
         
         while True:
@@ -177,6 +234,18 @@ class VoiceAssistant:
                 if user_input.lower() in ['quit', 'exit', '退出']:
                     print(" 再见！")
                     break
+                
+                # 切换流式/非流式模式
+                elif user_input.lower() == 'stream':
+                    # 同时切换ASR和TTS
+                    self.use_stream_asr = not self.use_stream_asr
+                    self.use_stream_tts = not self.use_stream_tts
+                    asr_mode = '⚡流式识别（零延迟）' if self.use_stream_asr else '💾传统识别'
+                    tts_mode = '⚡流式播放（低延迟）' if self.use_stream_tts else '💾传统播放'
+                    print(f"✅ 已切换模式：")
+                    print(f"   ASR: {asr_mode}")
+                    print(f"   TTS: {tts_mode}")
+                    continue
                 
                 # 直接播报
                 elif user_input.startswith('speak:') or user_input.startswith('说:'):
