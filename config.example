@@ -42,3 +42,42 @@ TTS_CONFIG = {
 OUTPUT_DIR = "./audio_files"
 RECORDED_AUDIO = f"{OUTPUT_DIR}/recorded.wav"  # 改为WAV格式，便于检查采样率
 TTS_AUDIO = f"{OUTPUT_DIR}/tts_output.mp3"
+
+# ==============================================================
+# Porcupine 唤醒词配置
+# 获取Access Key: https://console.picovoice.ai/
+# ==============================================================
+
+# Porcupine Access Key（必填）
+PORCUPINE_ACCESS_KEY = "从 https://console.picovoice.ai/ 获取"
+
+# 是否使用自定义模型
+PORCUPINE_USE_CUSTOM = True  # True=使用自定义模型, False=使用内置唤醒词
+
+# 自定义模型配置（当 PORCUPINE_USE_CUSTOM=True 时使用）
+PORCUPINE_CUSTOM_MODEL_PATH = "./小智_zh_raspberry-pi_v3_0_0.ppn"
+PORCUPINE_CUSTOM_KEYWORD = "小智小智"
+PORCUPINE_LANGUAGE_MODEL_PATH = "./models/porcupine_params_zh.pv"  # 中文语言模型
+
+# 内置唤醒词配置（当 PORCUPINE_USE_CUSTOM=False 时使用）
+# 可选: porcupine, picovoice, bumblebee, alexa, hey google 等
+PORCUPINE_BUILTIN_KEYWORDS = ["porcupine"]
+
+# 敏感度配置（0.0-1.0）
+# 0.0: 不敏感（误唤醒少，但可能漏检）
+# 0.5: 平衡（推荐）
+# 1.0: 非常敏感（易误唤醒）
+PORCUPINE_SENSITIVITY = 0.5
+
+# VAD配置
+VAD_CONFIG = {
+    "aggressiveness": 2,              # WebRTC VAD敏感度 0-3（推荐2）
+    "min_silence_duration_ms": 800,   # 最小静音时长（说完多久算结束）
+}
+
+# 唤醒后配置
+WAKE_RESPONSE_CONFIG = {
+    "response_audio": "./audio_files/你好明.wav",  # 唤醒后播放的音频文件
+    "listen_timeout": 30,                           # 唤醒后等待用户说话的超时时间（秒）
+    "return_to_wake_mode": True,                   # 回复后是否继续监听唤醒词
+}

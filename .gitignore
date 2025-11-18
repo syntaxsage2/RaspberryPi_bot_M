@@ -73,6 +73,9 @@ config.py
 *.mp3
 audio_files/
 
+# 忽略test开头的py文件
+test_*.py
+
 # Temporary files
 *.tmp
 *.temp

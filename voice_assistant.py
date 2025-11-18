@@ -6,10 +6,16 @@
 
 import os
 import sys
+import time
+import pyaudio
 from config import (
     XFYUN_APPID, XFYUN_API_KEY, XFYUN_API_SECRET,
     OUTPUT_DIR, RECORDED_AUDIO, TTS_AUDIO,
-    AUDIO_CONFIG, TTS_CONFIG
+    AUDIO_CONFIG, TTS_CONFIG, VAD_CONFIG, WAKE_RESPONSE_CONFIG,
+    PORCUPINE_ACCESS_KEY, PORCUPINE_USE_CUSTOM,
+    PORCUPINE_CUSTOM_MODEL_PATH, PORCUPINE_CUSTOM_KEYWORD,
+    PORCUPINE_LANGUAGE_MODEL_PATH, PORCUPINE_SENSITIVITY,
+    PORCUPINE_BUILTIN_KEYWORDS
 )
 from xfyun_asr_manual import XFyunASRManual
 from xfyun_asr_stream import XFyunASRStream  # 流式ASR
@@ -78,8 +84,60 @@ class VoiceAssistant:
         self.use_stream_asr = True  # 流式识别
         self.use_stream_tts = True  # 流式播放
         
+        # 初始化唤醒词检测器
+        self.wake_word_detector = None
+        self._init_wake_word_detector()
+        
         print(" 语音助手初始化完成！")
         print("=" * 60)
+    
+    def _init_wake_word_detector(self):
+        """初始化唤醒词检测器"""
+        if not PORCUPINE_ACCESS_KEY or PORCUPINE_ACCESS_KEY == "你的AccessKey":
+            print("⚠️  未配置Porcupine Access Key，唤醒功能未启用")
+            print("   请在 config.py 中配置 PORCUPINE_ACCESS_KEY")
+            return False
+        
+        try:
+            if PORCUPINE_USE_CUSTOM:
+                # 使用自定义中文唤醒词
+                from wake_word_detector_porcupine_custom import PorcupineCustomDetector
+                
+                if not os.path.exists(PORCUPINE_CUSTOM_MODEL_PATH):
+                    print(f"⚠️  自定义模型文件不存在: {PORCUPINE_CUSTOM_MODEL_PATH}")
+                    return False
+                
+                self.wake_word_detector = PorcupineCustomDetector(
+                    access_key=PORCUPINE_ACCESS_KEY,
+                    keyword_paths=[PORCUPINE_CUSTOM_MODEL_PATH],
+                    keywords=[PORCUPINE_CUSTOM_KEYWORD],
+                    sensitivities=[PORCUPINE_SENSITIVITY],
+                    model_path=PORCUPINE_LANGUAGE_MODEL_PATH
+                )
+                print(f"🎯 使用自定义唤醒词: {PORCUPINE_CUSTOM_KEYWORD}")
+            else:
+                # 使用内置英文唤醒词
+                from wake_word_detector_porcupine import PorcupineDetector
+                
+                self.wake_word_detector = PorcupineDetector(
+                    access_key=PORCUPINE_ACCESS_KEY,
+                    keywords=PORCUPINE_BUILTIN_KEYWORDS,
+                    sensitivities=[PORCUPINE_SENSITIVITY] * len(PORCUPINE_BUILTIN_KEYWORDS)
+                )
+                print(f"🎯 使用内置唤醒词: {', '.join(PORCUPINE_BUILTIN_KEYWORDS)}")
+            
+            if self.wake_word_detector.initialize():
+                print("✅ 唤醒词检测器已启用")
+                return True
+            else:
+                print("❌ 唤醒词检测器初始化失败")
+                self.wake_word_detector = None
+                return False
+                
+        except Exception as e:
+            print(f"❌ 唤醒词检测器加载失败: {e}")
+            self.wake_word_detector = None
+            return False
     
     def _check_config(self):
         """检查配置是否完整"""
@@ -291,6 +349,189 @@ class VoiceAssistant:
                 print(f"\n❌ 发生错误：{e}")
                 continue
     
+    def run_with_wake_word(self):
+        """唤醒词模式：等待唤醒 → 播放回应 → VAD录音 → ASR识别 → 回复 → 循环"""
+        if not self.wake_word_detector:
+            print("❌ 唤醒词检测器未初始化，无法使用唤醒模式")
+            print("   请检查 config.py 中的 PORCUPINE_ACCESS_KEY 配置")
+            return
+        
+        print("\n" + "=" * 60)
+        print("🎤 语音助手 - 唤醒词模式")
+        print("=" * 60)
+        
+        if PORCUPINE_USE_CUSTOM:
+            print(f"🎯 唤醒词: {PORCUPINE_CUSTOM_KEYWORD}")
+        else:
+            print(f"🎯 唤醒词: {', '.join(PORCUPINE_BUILTIN_KEYWORDS)}")
+        
+        print(f"🎚️  敏感度: {PORCUPINE_SENSITIVITY}")
+        print(f"💬 回应语: 你好，明")
+        print(f"⏱️  监听超时: {WAKE_RESPONSE_CONFIG['listen_timeout']}秒")
+        print("=" * 60)
+        print("💡 说出唤醒词来激活助手（按Ctrl+C退出）")
+        print("=" * 60)
+        
+        # 初始化PyAudio
+        audio = pyaudio.PyAudio()
+        
+        try:
+            # 打开音频流
+            stream = audio.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=self.wake_word_detector.get_sample_rate(),
+                input=True,
+                input_device_index=AUDIO_CONFIG.get('input_device_index'),
+                frames_per_buffer=self.wake_word_detector.get_frame_length()
+            )
+            
+            print("🎙️  监听唤醒词中...\n")
+            
+            wake_count = 0
+            
+            while True:
+                # 读取音频帧
+                pcm_data = stream.read(self.wake_word_detector.get_frame_length(), exception_on_overflow=False)
+                
+                # 检测唤醒词
+                detected, keyword_index = self.wake_word_detector.detect(pcm_data)
+                
+                if detected and keyword_index >= 0:
+                    wake_count += 1
+                    keyword = PORCUPINE_CUSTOM_KEYWORD if PORCUPINE_USE_CUSTOM else PORCUPINE_BUILTIN_KEYWORDS[keyword_index]
+                    
+                    print(f"\n✨ 检测到唤醒词: {keyword}")
+                    print(f"🔔 这是第 {wake_count} 次唤醒\n")
+                    
+                    # 播放回应语音："你好，明"（本地音频文件）
+                    response_audio = WAKE_RESPONSE_CONFIG.get('response_audio')
+                    if response_audio and os.path.exists(response_audio):
+                        print("🔊 播放回应: 你好，明")
+                        try:
+                            self.player.play(response_audio, wait=True)
+                        except Exception as e:
+                            print(f"⚠️  播放回应失败: {e}")
+                    else:
+                        print(f"⚠️  回应音频文件不存在: {response_audio}")
+                        print("   请将 '你好明.wav' 放置到 ./audio_files/ 目录")
+                    
+                    # 暂停唤醒检测流（避免录制时检测到自己的声音）
+                    stream.stop_stream()
+                    
+                    # 使用VAD录制用户语音
+                    print("\n📝 请说话...")
+                    try:
+                        audio_data, duration = self.recorder.record_with_vad_lite(
+                            max_duration=WAKE_RESPONSE_CONFIG['listen_timeout'],
+                            aggressiveness=VAD_CONFIG['aggressiveness'],
+                            min_silence_duration_ms=VAD_CONFIG['min_silence_duration_ms']
+                        )
+                        
+                        if audio_data is None or len(audio_data) == 0:
+                            print("⚠️  未检测到语音输入")
+                            # 重新开始监听唤醒词
+                            stream.start_stream()
+                            print("\n🎙️  监听唤醒词中...\n")
+                            continue
+                        
+                        print(f"✅ 录音完成（时长: {duration:.1f}秒）")
+                        
+                        # ASR识别
+                        print("🔄 识别中...")
+                        if self.use_stream_asr:
+                            # 流式识别：启动ASR
+                            self.asr_stream.start_recognition()
+                            
+                            # 分帧发送音频
+                            chunk_size = self.recorder.chunk * 2  # 字节数
+                            for i in range(0, len(audio_data), chunk_size):
+                                frame = audio_data[i:i + chunk_size]
+                                self.asr_stream.add_audio_frame(frame)
+                            
+                            # 结束识别
+                            self.asr_stream.finish_recording()
+                            user_text = self.asr_stream.wait_result(timeout=10)
+                        else:
+                            # 手动识别
+                            user_text = self.asr.recognize(audio_data)
+                        
+                        if not user_text:
+                            print("❌ 识别失败或未识别到内容")
+                            # 重新开始监听唤醒词
+                            stream.start_stream()
+                            print("\n🎙️  监听唤醒词中...\n")
+                            continue
+                        
+                        print(f"💬 用户: {user_text}")
+                        
+                        # 简单回复（后续可接LLM）
+                        reply = self._generate_simple_reply(user_text)
+                        print(f"🤖 助手: {reply}")
+                        
+                        # TTS播放回复
+                        self.speak(reply)
+                        
+                        # 继续监听唤醒词
+                        if WAKE_RESPONSE_CONFIG.get('return_to_wake_mode', True):
+                            stream.start_stream()
+                            print("\n🎙️  监听唤醒词中...\n")
+                        else:
+                            print("✅ 对话结束")
+                            break
+                    
+                    except Exception as e:
+                        print(f"❌ 处理用户语音时出错: {e}")
+                        # 重新开始监听唤醒词
+                        stream.start_stream()
+                        print("\n🎙️  监听唤醒词中...\n")
+                        continue
+        
+        except KeyboardInterrupt:
+            print("\n\n⚠️  用户中断")
+        
+        except Exception as e:
+            print(f"\n❌ 唤醒模式运行出错: {e}")
+        
+        finally:
+            # 清理资源
+            try:
+                stream.stop_stream()
+                stream.close()
+            except:
+                pass
+            
+            audio.terminate()
+            
+            if self.wake_word_detector:
+                self.wake_word_detector.cleanup()
+            
+            print(f"\n✅ 唤醒模式结束（总共唤醒 {wake_count} 次）")
+    
+    def _generate_simple_reply(self, user_text):
+        """
+        生成简单回复（后续可接入LLM）
+        :param user_text: 用户输入文本
+        :return: 回复文本
+        """
+        user_text_lower = user_text.lower()
+        
+        # 简单的关键词匹配
+        if "天气" in user_text:
+            return "今天天气不错，适合出门散步"
+        elif "时间" in user_text or "几点" in user_text:
+            import datetime
+            now = datetime.datetime.now()
+            return f"现在是{now.hour}点{now.minute}分"
+        elif "你好" in user_text or "hello" in user_text_lower:
+            return "你好，有什么可以帮助你的吗？"
+        elif "再见" in user_text or "拜拜" in user_text:
+            return "再见，期待下次与你聊天"
+        elif "谢谢" in user_text:
+            return "不客气，很高兴能帮到你"
+        else:
+            return f"我听到你说：{user_text}。这是一个测试回复，后续可以接入大语言模型"
+    
     def simple_test(self):
         """简单测试：单独测试TTS或ASR"""
         print("\n 简单测试模式")
@@ -329,14 +570,15 @@ def main():
     assistant = VoiceAssistant()
     
     # 显示菜单
-    print("\n 请选择运行模式：")
+    print("\n🚀 请选择运行模式：")
     print("=" * 60)
     print("1. 测试模式（完整测试所有功能）")
     print("2. 交互模式（持续对话）")
     print("3. 简单测试（单独测试某个功能）")
+    print("4. 唤醒词模式（🌟推荐：唤醒 → 对话 → 循环）")
     print("=" * 60)
     
-    mode = input("请输入模式编号（1/2/3）：").strip()
+    mode = input("请输入模式编号（1/2/3/4）：").strip()
     
     if mode == '1':
         assistant.test_mode()
@@ -344,9 +586,11 @@ def main():
         assistant.interactive_mode()
     elif mode == '3':
         assistant.simple_test()
+    elif mode == '4':
+        assistant.run_with_wake_word()
     else:
-        print("  无效的模式选择")
-        print(" 默认进入交互模式...")
+        print("❌ 无效的模式选择")
+        print("💡 默认进入交互模式...")
         assistant.interactive_mode()
 
 
